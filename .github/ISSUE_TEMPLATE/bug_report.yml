@@ -1,0 +1,85 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. **Please do not report
+        security issues here** — see [SECURITY.md](../SECURITY.md) for the
+        private disclosure process.
+
+  - type: input
+    id: swivel-version
+    attributes:
+      label: Swivel version
+      description: From the **About Swivel** dialog — e.g. "1.0.0 (build 42)"
+      placeholder: 1.0.0 (build 42)
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: From Apple menu → About This Mac
+      placeholder: macOS 14.4 (Sonoma)
+    validations:
+      required: true
+
+  - type: input
+    id: claude-version
+    attributes:
+      label: Claude Desktop version
+      description: From Claude → Settings → About (optional but helpful)
+      placeholder: 0.8.x
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: Swivel beeped instead of switching when I pressed ⌘⌥2.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Numbered list. The more precise, the faster we can reproduce.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      placeholder: Swivel should have quit Claude and loaded the Work account.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: |
+        Open **Console.app**, search for `subsystem:com.swivel.app`,
+        reproduce the bug, and paste relevant lines below.
+      render: shell
+
+  - type: checkboxes
+    id: backups
+    attributes:
+      label: Before reporting
+      options:
+        - label: I've confirmed I'm on the latest Swivel release.
+          required: true
+        - label: I've checked the [Troubleshooting section of the README](../../README.md#troubleshooting).
+          required: true
+        - label: This is **not** a security vulnerability (those go to [SECURITY.md](../SECURITY.md)).
+          required: true

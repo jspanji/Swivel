@@ -1,0 +1,44 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+*.xcodeproj/
+*.xcworkspace/
+
+# Build artifacts
+build/
+DerivedData/
+*.app
+*.dSYM
+*.zip
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Xcode (if anyone opens it in Xcode later)
+xcuserdata/
+*.xcuserstate
+*.perspectivev3
+IDEWorkspaceChecks.plist
+
+# User-specific
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Environment / secrets (none today, but defensive)
+.env
+.env.local
+*.p12
+*.cer
+*.mobileprovision
+
+# Local Claude Code state accidentally dropped into repo
+.claude/settings.local.json

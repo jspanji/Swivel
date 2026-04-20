@@ -1,0 +1,53 @@
+name: Feature request
+description: Suggest an improvement or a new capability
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for thinking about how to make Swivel better. Please
+        describe the problem you're trying to solve, not just the
+        solution you have in mind.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: |
+        Start with the user need. "I want to do X, but today I have to
+        do Y and Z." A clear problem statement helps evaluate whether
+        a feature earns its weight.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you have in mind. Sketches, flows, or even pseudo-code welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about and why they didn't feel right.
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Who else benefits?
+      description: |
+        Rough sense of how many users would gain from this. "Me, probably
+        a few people juggling more than 3 accounts" is a fine answer.
+
+  - type: checkboxes
+    id: acknowledgments
+    attributes:
+      label: Before submitting
+      options:
+        - label: I've searched existing issues and this isn't a duplicate.
+          required: true
+        - label: I've read the [README](../../README.md) and this isn't already possible.
+          required: true

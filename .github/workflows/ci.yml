@@ -1,0 +1,54 @@
+name: CI
+
+# Build on every push to main and on every PR. Keeps the default branch
+# green and catches regressions before they land.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Cancel superseded runs on the same ref — saves runner minutes on
+# force-pushes and PR refreshes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (macOS 14 / Swift)
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        # GitHub macOS runners ship multiple Xcode installs; pin one so
+        # Swift version drift doesn't silently break us.
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Build (debug)
+        run: swift build
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Assemble .app bundle
+        # Proves the bundle script still works end-to-end. No install,
+        # no signing beyond ad-hoc.
+        run: ./build-app.sh
+
+      - name: Upload .app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Swivel.app-${{ github.sha }}
+          path: build/Swivel.app
+          retention-days: 7

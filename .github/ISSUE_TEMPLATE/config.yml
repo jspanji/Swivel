@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/jspanji/Swivel/security/advisories/new
+    about: Please report security issues privately via GitHub Security Advisories. Do not file a public issue.
+  - name: Question or discussion
+    url: https://github.com/jspanji/Swivel/discussions
+    about: For usage questions, ideas, or anything that isn't a concrete bug or feature request.

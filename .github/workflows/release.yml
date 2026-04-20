@@ -1,0 +1,91 @@
+name: Release
+
+# Triggered by pushing a `vX.Y.Z` tag. Builds the app, zips it, and
+# creates a draft GitHub Release with the zip + SHA-256 attached. The
+# maintainer reviews and publishes from the GitHub UI.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.0.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write   # needed to create the release
+
+jobs:
+  release:
+    name: Build + draft release
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Derive version
+        id: version
+        run: |
+          RAW_TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          # Strip leading 'v' for the marketing string.
+          VERSION="${RAW_TAG#v}"
+          echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build release artifact
+        env:
+          MARKETING_VERSION: ${{ steps.version.outputs.version }}
+        run: ./build-app.sh --release
+
+      - name: Compute SHA-256
+        id: sha
+        run: |
+          ZIP="build/Swivel-${{ steps.version.outputs.version }}.zip"
+          SHA="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes
+        id: notes
+        # Pull the matching version section from CHANGELOG.md — lines
+        # between `## [X.Y.Z]` and the next `## [`.
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          NOTES="$(awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (capture) exit
+              if ($0 ~ "\\[" ver "\\]") { capture=1; next }
+            }
+            capture { print }
+          ' CHANGELOG.md)"
+          if [ -z "$NOTES" ]; then
+            NOTES="See CHANGELOG.md for details."
+          fi
+          {
+            echo "notes<<EOF"
+            echo "$NOTES"
+            echo ""
+            echo "---"
+            echo ""
+            echo "**SHA-256 (Swivel-$VERSION.zip):** \`${{ steps.sha.outputs.sha256 }}\`"
+            echo ""
+            echo "> ⚠️ This build is ad-hoc signed. On first launch, right-click the app and choose **Open** to bypass Gatekeeper's warning. For a signed + notarized build, see docs/ARCHITECTURE.md."
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Swivel ${{ steps.version.outputs.version }}
+          body: ${{ steps.notes.outputs.notes }}
+          draft: true
+          prerelease: false
+          files: ${{ steps.sha.outputs.zip }}
