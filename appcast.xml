@@ -24,11 +24,32 @@
         <description>Auto-update feed for Swivel — switch between Claude Desktop accounts in two seconds.</description>
         <language>en</language>
 
-        <!-- v1.0.0 was shipped before Sparkle existed in the app. It has
-             no <item> here intentionally: users on 1.0.0 have no
-             updater wired up and would never read this feed anyway.
-             They'll need to manually download 1.1.0 the first time.
-             From 1.1.0 onward, auto-update kicks in. -->
+        <!-- Newest release first. v1.0.0 shipped before Sparkle existed and
+             has no item here (those users install 1.1.0 manually once);
+             auto-update takes over from 1.1.0 onward. Cut a new release by
+             adding an <item> ABOVE this one with the enclosure line that
+             `sign_update` prints. -->
+        <item>
+            <title>1.1.0</title>
+            <pubDate>Tue, 16 Jun 2026 09:53:50 +0000</pubDate>
+            <sparkle:version>3</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+              <h2>Swivel 1.1.0</h2>
+              <ul>
+                <li>Glass popover + floating Usage Overlay</li>
+                <li>Opt-in Live Usage (5h / 7d) from claude.ai</li>
+                <li>Deliberate per-row switch button; calmer usage colors</li>
+                <li>Auto-update via Sparkle; snapshot/restore hardening</li>
+              </ul>
+            ]]></description>
+            <enclosure
+                url="https://github.com/jspanji/Swivel/releases/download/v1.1.0/Swivel-1.1.0.zip"
+                length="1436505"
+                type="application/octet-stream"
+                sparkle:edSignature="1w57MmOgdY51Nn93V8mFLiHviZE/gRTQYGmN9Sart3KdpXoulhwcsvPAficwQimO9CGTwVs+oinOtzVWg7yACw==" />
+        </item>
 
     </channel>
 </rss>
