@@ -87,11 +87,21 @@ jobs:
           if [ -z "$SIGN" ] || [ ! -x "$SIGN" ]; then
             echo "::error::EdDSA sign_update binary not found under .build/artifacts"; exit 1
           fi
+          echo "key: ${#SPARKLE_PRIVATE_KEY} chars (a Sparkle EdDSA private key is 44); signer: $SIGN"
           KEYFILE="$(mktemp)"
           trap 'rm -f "$KEYFILE"' EXIT
-          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$KEYFILE"
-          SIGOUT="$("$SIGN" "${{ steps.artifact.outputs.zip }}" --ed-key-file "$KEYFILE")"
-          echo "sign_update: $SIGOUT"
+          # Strip any stray whitespace/newlines a paste may have introduced.
+          printf '%s' "$SPARKLE_PRIVATE_KEY" | tr -d '[:space:]' > "$KEYFILE"
+          echo "key file: $(wc -c < "$KEYFILE") bytes"
+          # Capture sign_update's own error instead of letting `set -e` swallow it.
+          set +e
+          SIGOUT="$("$SIGN" "${{ steps.artifact.outputs.zip }}" --ed-key-file "$KEYFILE" 2>&1)"
+          RC=$?
+          set -e
+          echo "sign_update (rc=$RC): $SIGOUT"
+          if [ "$RC" -ne 0 ]; then
+            echo "::error::sign_update failed (rc=$RC): $SIGOUT"; exit 1
+          fi
           ED_SIG="$(printf '%s' "$SIGOUT" | sed -n 's/.*edSignature="\([^"]*\)".*/\1/p')"
           LENGTH="$(printf '%s' "$SIGOUT" | sed -n 's/.*length="\([0-9]*\)".*/\1/p')"
           if [ -z "$ED_SIG" ] || [ -z "$LENGTH" ]; then
