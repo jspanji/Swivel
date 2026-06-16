@@ -30,6 +30,14 @@
              no item (those users install 1.1.0 manually once); auto-update
              takes over from 1.1.0 onward. -->
         <!-- SPARKLE:NEW-ITEMS-BELOW -->
+        <item>
+            <title>1.1.0</title>
+            <pubDate>Tue, 16 Jun 2026 11:13:18 +0000</pubDate>
+            <sparkle:version>13</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/jspanji/Swivel/releases/download/v1.1.0/Swivel-1.1.0.zip" length="1378426" type="application/octet-stream" sparkle:edSignature="ANdM+DE7vzO65+8Rkjf5FeX3JGEWREmiT0drEv1dYEnw7QiPFRmIYbyblrk/zVLJUk0KhKhMrQH7hj53Z/6JAQ==" />
+        </item>
 
     </channel>
 </rss>
