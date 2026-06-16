@@ -54,11 +54,13 @@ final class ClaudeStatusChecker {
     private(set) var latest: ClaudeStatusSnapshot?
 
     func start() {
+        dispatchPrecondition(condition: .onQueue(.main))
         stopped = false
         check()
     }
 
     func stop() {
+        dispatchPrecondition(condition: .onQueue(.main))
         stopped = true
         timer?.invalidate()
         timer = nil
@@ -68,6 +70,7 @@ final class ClaudeStatusChecker {
     /// already in flight or if the last check started less than
     /// `userTriggerThrottle` seconds ago — the data is already fresh.
     func checkNow() {
+        dispatchPrecondition(condition: .onQueue(.main))
         if inFlight { return }
         if let last = lastCheckStartedAt,
            Date().timeIntervalSince(last) < userTriggerThrottle { return }

@@ -1,7 +1,9 @@
 import AppKit
+import os.log
 
 enum ClaudeAppController {
     private static let bundleID = "com.anthropic.claudefordesktop"
+    private static let log = Logger(subsystem: "com.swivel.app", category: "ClaudeAppController")
 
     static func isRunning() -> Bool {
         !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
@@ -41,8 +43,14 @@ enum ClaudeAppController {
     static func launch() {
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-            NSWorkspace.shared.openApplication(at: url, configuration: config, completionHandler: nil)
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+            log.error("Claude Desktop not found; cannot relaunch after switch")
+            return
+        }
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
+            if let error {
+                log.error("relaunch failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 }
