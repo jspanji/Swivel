@@ -24,11 +24,12 @@
         <description>Auto-update feed for Swivel — switch between Claude Desktop accounts in two seconds.</description>
         <language>en</language>
 
-        <!-- v1.0.0 was shipped before Sparkle existed in the app. It has
-             no <item> here intentionally: users on 1.0.0 have no
-             updater wired up and would never read this feed anyway.
-             They'll need to manually download 1.1.0 the first time.
-             From 1.1.0 onward, auto-update kicks in. -->
+        <!-- The Release workflow (.github/workflows/release.yml) signs each
+             build on a vX.Y.Z tag and inserts a new <item> directly below the
+             marker line below, newest-first. v1.0.0 predates Sparkle and has
+             no item (those users install 1.1.0 manually once); auto-update
+             takes over from 1.1.0 onward. -->
+        <!-- SPARKLE:NEW-ITEMS-BELOW -->
 
     </channel>
 </rss>

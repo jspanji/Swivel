@@ -1,8 +1,12 @@
 name: Release
 
-# Triggered by pushing a `vX.Y.Z` tag. Builds the app, zips it, and
-# creates a draft GitHub Release with the zip + SHA-256 attached. The
-# maintainer reviews and publishes from the GitHub UI.
+# Triggered by pushing a `vX.Y.Z` tag (or manual dispatch). Builds the app,
+# signs it for Sparkle, publishes the signed <item> to appcast.xml, and creates
+# a DRAFT GitHub Release with the zip attached for the maintainer to publish.
+#
+# Requires the `SPARKLE_ED_PRIVATE_KEY` secret: export your key with
+#   .build/artifacts/sparkle/Sparkle/bin/generate_keys -x key.txt
+# and paste the file's contents into the repo secret.
 
 on:
   push:
@@ -16,16 +20,23 @@ on:
         type: string
 
 permissions:
-  contents: write   # needed to create the release
+  contents: write   # create the release + commit the appcast update
 
 jobs:
   release:
-    name: Build + draft release
+    name: Build, sign + draft release
     runs-on: macos-14
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Check out the branch (not the detached tag) so the appcast commit
+          # can be pushed back, and fetch ALL history so build-app.sh's
+          # rev-count build number is monotonic — a shallow clone yields 1,
+          # which would make every release look like the same version.
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app
@@ -33,51 +44,72 @@ jobs:
       - name: Derive version
         id: version
         run: |
-          RAW_TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
-          # Strip leading 'v' for the marketing string.
-          VERSION="${RAW_TAG#v}"
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            RAW_TAG="${{ github.event.inputs.tag }}"
+          else
+            RAW_TAG="${{ github.ref_name }}"
+          fi
           echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version=${RAW_TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build release artifact
         env:
           MARKETING_VERSION: ${{ steps.version.outputs.version }}
         run: ./build-app.sh --release
 
-      - name: Compute SHA-256
-        id: sha
+      - name: Locate artifact + build number
+        id: artifact
         run: |
           ZIP="build/Swivel-${{ steps.version.outputs.version }}.zip"
-          SHA="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
-          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          if [ ! -f "$ZIP" ]; then echo "::error::$ZIP not found"; exit 1; fi
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(shasum -a 256 "$ZIP" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "build_number=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' build/Swivel.app/Contents/Info.plist)" >> "$GITHUB_OUTPUT"
+
+      - name: Sign update (Sparkle EdDSA)
+        id: sign
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          if [ -z "${SPARKLE_PRIVATE_KEY:-}" ]; then
+            echo "::error::SPARKLE_ED_PRIVATE_KEY secret is not set — cannot sign the update."
+            exit 1
+          fi
+          SIGN="$(find .build -type f -name sign_update -path '*Sparkle*' | head -1)"
+          if [ -z "$SIGN" ]; then echo "::error::sign_update not found under .build"; exit 1; fi
+          KEYFILE="$(mktemp)"
+          trap 'rm -f "$KEYFILE"' EXIT
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$KEYFILE"
+          SIGOUT="$("$SIGN" "${{ steps.artifact.outputs.zip }}" --ed-key-file "$KEYFILE")"
+          echo "sign_update: $SIGOUT"
+          ED_SIG="$(printf '%s' "$SIGOUT" | sed -n 's/.*edSignature="\([^"]*\)".*/\1/p')"
+          LENGTH="$(printf '%s' "$SIGOUT" | sed -n 's/.*length="\([0-9]*\)".*/\1/p')"
+          if [ -z "$ED_SIG" ] || [ -z "$LENGTH" ]; then
+            echo "::error::Could not parse signature/length from sign_update output."
+            exit 1
+          fi
+          echo "ed_sig=$ED_SIG" >> "$GITHUB_OUTPUT"
+          echo "length=$LENGTH" >> "$GITHUB_OUTPUT"
 
       - name: Extract release notes
         id: notes
-        # Pull the matching version section from CHANGELOG.md — lines
-        # between `## [X.Y.Z]` and the next `## [`.
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           NOTES="$(awk -v ver="$VERSION" '
-            /^## \[/ {
-              if (capture) exit
-              if ($0 ~ "\\[" ver "\\]") { capture=1; next }
-            }
+            /^## \[/ { if (capture) exit; if ($0 ~ "\\[" ver "\\]") { capture=1; next } }
             capture { print }
           ' CHANGELOG.md)"
-          if [ -z "$NOTES" ]; then
-            NOTES="See CHANGELOG.md for details."
-          fi
+          [ -z "$NOTES" ] && NOTES="See CHANGELOG.md for details."
           {
-            echo "notes<<EOF"
+            echo "notes<<NOTES_EOF"
             echo "$NOTES"
             echo ""
             echo "---"
             echo ""
-            echo "**SHA-256 (Swivel-$VERSION.zip):** \`${{ steps.sha.outputs.sha256 }}\`"
+            echo "**SHA-256 (Swivel-$VERSION.zip):** \`${{ steps.artifact.outputs.sha256 }}\`"
             echo ""
-            echo "> ⚠️ This build is ad-hoc signed. On first launch, right-click the app and choose **Open** to bypass Gatekeeper's warning. For a signed + notarized build, see docs/ARCHITECTURE.md."
-            echo "EOF"
+            echo "> ⚠️ Ad-hoc signed. On first launch, right-click the app and choose **Open** to bypass Gatekeeper. See docs/ARCHITECTURE.md for the notarization path."
+            echo "NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create draft release
@@ -88,4 +120,37 @@ jobs:
           body: ${{ steps.notes.outputs.notes }}
           draft: true
           prerelease: false
-          files: ${{ steps.sha.outputs.zip }}
+          files: ${{ steps.artifact.outputs.zip }}
+
+      - name: Publish signed item to appcast.xml
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          ITEM="$(python3 scripts/append_appcast_item.py \
+            --appcast appcast.xml \
+            --version '${{ steps.version.outputs.version }}' \
+            --tag '${{ steps.version.outputs.tag }}' \
+            --build '${{ steps.artifact.outputs.build_number }}' \
+            --length '${{ steps.sign.outputs.length }}' \
+            --sig '${{ steps.sign.outputs.ed_sig }}' \
+            --repo '${{ github.repository }}')"
+          {
+            echo "### Sparkle appcast item — ${{ steps.version.outputs.version }}"
+            echo "If the auto-commit below was skipped/blocked, add this under the marker in appcast.xml:"
+            echo '```xml'
+            echo "$ITEM"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if git diff --quiet -- appcast.xml; then
+            echo "appcast already lists this version — nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add appcast.xml
+          git commit -m "Publish ${{ steps.version.outputs.version }} to the Sparkle appcast [skip ci]"
+          if git push origin "HEAD:${DEFAULT_BRANCH}"; then
+            echo "Committed the appcast update to ${DEFAULT_BRANCH}."
+          else
+            echo "::warning::Couldn't push appcast to ${DEFAULT_BRANCH} (branch protection?). Add the item from the run summary above via a PR."
+          fi
