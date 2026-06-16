@@ -6,6 +6,54 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-06-16
+
+### Added
+
+- Auto-update via Sparkle 2. Swivel polls `appcast.xml` on a 24-hour
+  cadence and offers verified EdDSA-signed updates. New
+  **Check for Updates…** menu item lets users force a check.
+  Users on 1.0.0 must manually install 1.1.0 once; from there auto-
+  update takes over.
+- Optional **Usage Overlay**: a translucent glass panel showing every
+  account's usage at a glance. Floats on top of your windows by default
+  (an "Always on Top" toggle tucks it behind them, visible on
+  show-desktop); click an account to switch. Toggle it from the popover's
+  gear menu — position and visibility persist across launches.
+- Optional **Live Usage** (experimental, off by default): when enabled
+  from the gear menu, Swivel fetches real-time 5-hour and 7-day utilization
+  per account
+  from claude.ai using each account's own saved session — always-on
+  numbers, including for inactive accounts, instead of the local cache's
+  pressure-only data. This is the only feature that makes a network
+  request beyond the public status page; it requires an explicit opt-in
+  with a confirmation, makes read-only requests, and falls back to the
+  local cache when a session has expired. It depends on undocumented
+  claude.ai endpoints, so it may break without notice.
+
+### Changed
+
+- The menu-bar dropdown is now a translucent **popover** (glass
+  material) instead of a plain menu. Same features, one surface:
+  per-account usage bars with plan / messages-left / reset-time detail,
+  an explicit per-row switch button, hover "…" menu for Rename / Change
+  Color / Restore Backup / Delete, and a footer with service status and
+  settings. Right-click the menu bar icon for a compact About / Updates /
+  Quit menu. Global hotkeys are unchanged.
+- Switching is now deliberate: clicking a row's usage area no longer
+  switches — use the row's **⇄** button (or a hotkey). A switch quits and
+  relaunches Claude, so requiring an explicit press avoids accidental
+  switches. Each row also shows its keyboard shortcut beside the name.
+- Usage color is now **calm by default**: a list of low-usage accounts
+  reads neutral instead of a wall of color. Amber appears at ≥ 75% and
+  red at ≥ 90% utilization, and a gauge fills only once an account is
+  actually approaching or at a limit — color is reserved for accounts
+  that need attention, matching the menu-bar icon's signal-by-absence
+  behavior.
+- Only recognized plans (Max, Pro, Free, Team, Enterprise) are labeled;
+  unrecognized internal plan codenames are now hidden rather than shown
+  as a raw identifier.
+
 ## [1.0.0] — 2026-04-20
 
 First public release.
@@ -51,5 +99,6 @@ First public release.
 - Shell-safe `Process` invocation when reading the keychain — args are
   passed as an array, never concatenated into a shell string.
 
-[Unreleased]: https://github.com/jspanji/Swivel/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/jspanji/Swivel/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/jspanji/Swivel/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jspanji/Swivel/releases/tag/v1.0.0

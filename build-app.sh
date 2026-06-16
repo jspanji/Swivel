@@ -7,7 +7,7 @@
 #   ./build-app.sh --release          Build + zip + emit SHA-256 for GitHub releases
 #
 # Environment overrides:
-#   MARKETING_VERSION=1.0.1           Override CFBundleShortVersionString (default: 1.0.0)
+#   MARKETING_VERSION=1.0.1           Override CFBundleShortVersionString (default: 1.1.0)
 #   BUILD_NUMBER=42                   Override CFBundleVersion (default: git rev count, or 1)
 
 set -euo pipefail
@@ -21,7 +21,7 @@ APP_DIR="$BUILD_DIR/${APP_NAME}.app"
 # Version metadata. Marketing version is a human-readable semver string
 # surfaced in the About dialog. Build number should monotonically increase
 # per build — git rev-count is a sensible default when available.
-MARKETING_VERSION="${MARKETING_VERSION:-1.0.0}"
+MARKETING_VERSION="${MARKETING_VERSION:-1.1.0}"
 if [[ -z "${BUILD_NUMBER:-}" ]]; then
     if git rev-parse --git-dir >/dev/null 2>&1; then
         BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
@@ -33,6 +33,22 @@ fi
 echo "==> Compiling Swivel ${MARKETING_VERSION} (build ${BUILD_NUMBER})"
 swift build -c release
 
+# Sparkle auto-update wiring. The public EdDSA key is committed at
+# `sparkle.pubkey` (it's public; only the private key in the
+# maintainer's keychain is sensitive). If the file is missing the
+# build still succeeds, but Sparkle won't be able to verify any
+# update — useful for fork/dev builds, not for releases.
+SPARKLE_FEED_URL="https://raw.githubusercontent.com/jspanji/Swivel/main/appcast.xml"
+SPARKLE_PUBLIC_KEY=""
+if [[ -f sparkle.pubkey ]]; then
+    SPARKLE_PUBLIC_KEY="$(tr -d '[:space:]' < sparkle.pubkey)"
+elif [[ -n "${SPARKLE_PUBLIC_KEY_OVERRIDE:-}" ]]; then
+    SPARKLE_PUBLIC_KEY="${SPARKLE_PUBLIC_KEY_OVERRIDE}"
+fi
+if [[ -z "$SPARKLE_PUBLIC_KEY" ]]; then
+    echo "    (note: no sparkle.pubkey — auto-update will be installed but unable to verify signatures)"
+fi
+
 BIN_PATH="$(swift build -c release --show-bin-path)/${APP_NAME}"
 if [[ ! -f "$BIN_PATH" ]]; then
     echo "Build failed: $BIN_PATH not found" >&2
@@ -43,8 +59,32 @@ echo "==> Assembling ${APP_NAME}.app"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
+mkdir -p "$APP_DIR/Contents/Frameworks"
 
 cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/${APP_NAME}"
+
+# Sparkle ships its bundled XPC services + auto-update UI inside its
+# .framework — has to live under Frameworks/ for the dynamic loader
+# and Sparkle's `Autoupdate` helper to find it. Source path is the
+# universal xcframework slice that ships in the SPM artifact bundle;
+# Sparkle's docs confirm copying just the macOS slice is correct.
+SPARKLE_SRC="$(swift build -c release --show-bin-path)/Sparkle.framework"
+if [[ ! -d "$SPARKLE_SRC" ]]; then
+    SPARKLE_SRC=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+fi
+if [[ ! -d "$SPARKLE_SRC" ]]; then
+    echo "Sparkle.framework not found — did you run 'swift build' first?" >&2
+    exit 1
+fi
+cp -R "$SPARKLE_SRC" "$APP_DIR/Contents/Frameworks/"
+
+# SPM's executable targets don't set the standard macOS app rpath
+# pointing at Contents/Frameworks/, so dyld can't find Sparkle at
+# launch ("Library not loaded: @rpath/Sparkle.framework/..."). Patch
+# the binary in place — has to happen BEFORE codesign because adding
+# an rpath invalidates any signature already on the binary.
+install_name_tool -add_rpath "@executable_path/../Frameworks" \
+    "$APP_DIR/Contents/MacOS/${APP_NAME}" 2>/dev/null || true
 
 YEAR="$(date +%Y)"
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
@@ -78,6 +118,10 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <string>Copyright © ${YEAR} Swivel contributors. MIT License.</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>SUFeedURL</key>
+    <string>${SPARKLE_FEED_URL}</string>
+    <key>SUPublicEDKey</key>
+    <string>${SPARKLE_PUBLIC_KEY}</string>
 </dict>
 </plist>
 PLIST

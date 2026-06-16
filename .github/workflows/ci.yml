@@ -26,9 +26,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Select Xcode
-        # GitHub macOS runners ship multiple Xcode installs; pin one so
-        # Swift version drift doesn't silently break us.
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+        # swift-testing (the `Testing` module the suite uses) ships with
+        # Xcode 16+. Pick the newest installed Xcode 16 so `swift test` can
+        # build the tests; fall back to the runner's default Xcode.
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          sudo xcode-select -s "${XCODE:-/Applications/Xcode.app}"
 
       - name: Show toolchain
         run: |
@@ -37,6 +40,9 @@ jobs:
 
       - name: Build (debug)
         run: swift build
+
+      - name: Test
+        run: swift test
 
       - name: Build (release)
         run: swift build -c release

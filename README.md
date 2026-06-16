@@ -10,10 +10,9 @@
 
 Swivel lives in your menu bar. Each account gets a saved snapshot of Claude Desktop's session — cookies, auth, chat history, preferences. Bind accounts to `⌘⌥1`, `⌘⌥2`, …, and flip between Personal ↔ Work (or Client A ↔ Client B) without logging out.
 
-> Everything runs locally. No telemetry. The only network request is to the public [Claude status page](https://status.claude.com) for the menu bar's service-status indicator.
+> Everything runs locally. No telemetry. By default the only network request is to the public [Claude status page](https://status.claude.com) for the menu bar's service-status indicator. One **opt-in** feature — [Live Usage](#live-usage-opt-in-experimental) — additionally talks to claude.ai; it's off until you turn it on.
 
-<!-- Drop a screenshot or short GIF here once you have one -->
-<!-- <p align="center"><img src="docs/screenshot.png" width="520" alt="Swivel menu screenshot"></p> -->
+<p align="center"><img src="docs/screenshots/popover.png" width="860" alt="Swivel's menu-bar popover and settings menu open over the desktop, showing live usage for the Personal and Work accounts"></p>
 
 ## Why
 
@@ -45,7 +44,7 @@ open /Applications/Swivel.app
 3. Sign out. Sign into your second account.
 4. **Add Account…** → *Work*.
 
-You now have two accounts. **Press `⌘⌥1` or `⌘⌥2`** to switch — or click the menu bar icon and pick one. Claude quits, the session swaps, Claude relaunches. The round trip is usually under two seconds.
+You now have two accounts. **Press `⌘⌥1` or `⌘⌥2`** to switch — or open the popover and hit a row's **⇄** button. Claude quits, the session swaps, Claude relaunches. The round trip is usually under two seconds.
 
 ## Shortcuts
 
@@ -54,25 +53,51 @@ You now have two accounts. **Press `⌘⌥1` or `⌘⌥2`** to switch — or cli
 | `⌘⌥1` … `⌘⌥9` | Switch to account by slot             |
 | `` ⌘⌥` ``     | Flip back to the previous account     |
 
-Slots follow the order accounts appear in the menu (alphabetical). Open the menu to see the current mapping — the shortcut is shown next to each account name.
+Slots follow the order accounts appear in the popover (alphabetical). Open it to see the current mapping — each account row shows its shortcut.
 
-## The menu
+## The popover
 
-- **Account list** — click any account to switch. The active account is bold.
+Click the menu bar icon to open a translucent glass popover:
+
+- **Account list** — each account with its usage bar (plan, messages left, reset countdown) and shortcut. Switch with the row's **⇄** button; the active account is bold with a ✓. The usage area itself isn't clickable — switching relaunches Claude, so it's a deliberate press, not a stray click.
+- **Hover "…"** on a row — rename, change color, restore a backup, or delete that account.
 - **Last used** — a persistent "flip back" row. Faster than re-picking.
-- **Update \<Account\>** — refresh the saved snapshot of the *current* account from Claude's live state. Run this occasionally to keep your saved profile in sync with recent chats.
+- **Save snapshot** (the save icon in the usage header) — re-saves the *current* account from Claude's live state. Run it occasionally so your saved profile keeps up with recent chats.
 - **Add Account…** — save the current Claude session as a new account.
-- **Manage ▸ \<Account\>** — rename, change color, restore a backup, or delete.
-- **Launch at Login** — start Swivel automatically at boot.
-- **Help & Documentation** — opens this README in the browser.
+- **Gear menu** — Launch at Login, the Usage Overlay toggle, the Live Usage toggle, Check for Updates…, Help, About, Quit.
 
-Each account gets a colored menu bar icon so you can see which one is active at a glance. Pick the color under **Manage ▸ \<Account\> ▸ Change Color**.
+Right-click the menu bar icon for a compact About / Check for Updates / Quit menu.
+
+Each account gets a colored menu bar icon so you can see which one is active at a glance. Pick the color from the row's hover "…" menu **▸ Change Color**.
+
+## The Usage Overlay
+
+**Gear menu ▸ Show Usage Overlay** puts a small glass panel on your desktop with every account's usage bar — same rows as the popover, always visible. By default it floats on top of your windows so you can watch your limits during a session; right-click it and toggle **Always on Top** off to tuck it behind windows (visible only on show-desktop) instead. Drag it by its title line; use a row's switch button (⇄) to switch. Position and visibility stick across launches.
+
+<p align="center"><img src="docs/screenshots/usage-overlay.png" width="560" alt="Swivel's Usage Overlay floating on the desktop: a glass panel with each account's 5-hour and 7-day usage"></p>
+
+## Live Usage (opt-in, experimental)
+
+By default, the usage bars come from Claude Desktop's **local cache** — which only carries utilization numbers when you're actually near a rate limit, and is frozen at the last snapshot for inactive accounts.
+
+**Gear menu ▸ Live Usage — Experimental** turns on real-time usage instead: Swivel queries `claude.ai` for each account and shows live **5-hour and 7-day** utilization, always — even when you're nowhere near a limit, and for accounts you're not currently signed into.
+
+<p align="center"><img src="docs/screenshots/live-usage.png" width="720" alt="Swivel's popover in Live Usage mode, showing per-account 5-hour and 7-day utilization"></p>
+
+> ⚠️ **Experimental.** This relies on undocumented `claude.ai` endpoints that aren't part of any public API, so it may change or break without warning. It's off by default and never required — the local-cache bars work regardless.
+
+This is the **one feature that sends anything off your Mac**, so it's **off until you switch it on** (with a confirmation the first time):
+
+- It makes **read-only** requests to `claude.ai` using each account's **own saved session** — the same data the Claude website shows on its usage page. Nothing is written; nothing goes anywhere but Anthropic; only your own accounts are queried.
+- Results are cached briefly so opening the popover doesn't spam the API.
+- If an account's saved session has expired, that account silently falls back to the local cache.
+- Turn it back off any time from the same menu.
 
 ## Backups
 
 Every save and every switch rotates the prior snapshot into a timestamped backup. Swivel keeps the **most recent 3 backups per account**.
 
-Restore one from **Manage ▸ \<Account\> ▸ Restore Backup**. The current snapshot becomes a new backup first, so you can undo the undo.
+Restore one from the account row's hover **"…" menu ▸ Restore Backup**. The current snapshot becomes a new backup first, so you can undo the undo.
 
 Snapshots are integrity-checked with a SHA-256 manifest. If a saved profile is ever corrupted (partial crash, disk error), Swivel refuses to restore it and surfaces the problem instead of silently propagating it to your live Claude install. Full design in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -91,7 +116,7 @@ You reinstalled Claude Desktop, which generated a new local encryption key. The 
 
 The snapshot's manifest doesn't match its files — usually from disk corruption or a mid-snapshot crash.
 
-**Fix:** restore a backup via **Manage ▸ \<Account\> ▸ Restore Backup**. Or re-save the account from a logged-in session.
+**Fix:** restore a backup via the account row's hover **"…" menu ▸ Restore Backup**. Or re-save the account from a logged-in session.
 </details>
 
 <details>

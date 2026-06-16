@@ -6,10 +6,10 @@ enum ProfileError: LocalizedError {
     case profileNotFound(String)
     case invalidName(String)
     case keychainReadFailed(String)
-    case keychainWriteFailed(String)
     case claudeDidNotQuit
     case ioFailure(String)
     case manifestMismatch(String)
+    case busy
 
     var errorDescription: String? {
         switch self {
@@ -17,10 +17,10 @@ enum ProfileError: LocalizedError {
         case .profileNotFound(let n): return "Profile \"\(n)\" not found."
         case .invalidName(let n): return "Invalid profile name: \(n)"
         case .keychainReadFailed(let m): return "Keychain read failed: \(m)"
-        case .keychainWriteFailed(let m): return "Keychain write failed: \(m)"
         case .claudeDidNotQuit: return "Claude Desktop did not quit in time. Please close it manually and try again."
         case .ioFailure(let m): return "File operation failed: \(m)"
         case .manifestMismatch(let m): return "Profile snapshot integrity check failed: \(m). Restore a backup or re-save this account."
+        case .busy: return "Another account operation is in progress. Try again in a moment."
         }
     }
 }
@@ -48,6 +48,14 @@ final class ProfileManager {
     // How many historical snapshots to keep per profile (in addition to
     // the current `Claude/` dir). Set low since each snapshot can be 100+MB.
     private let backupRingSize = 3
+
+    // Serializes every operation that mutates the live Claude directory
+    // (switch / save / update / restore-backup) so they can never interleave
+    // and corrupt the live session: switches run on a background queue while
+    // the save/update/restore actions fire on the main thread. Background
+    // work blocks to take the gate; main-thread actions acquire without
+    // blocking and throw `.busy` rather than freeze the UI.
+    private let mutationGate = DispatchSemaphore(value: 1)
 
     private static let backupDirPrefix = "Claude.backup."
     private static let backupDateFormatter: DateFormatter = {
@@ -109,8 +117,16 @@ final class ProfileManager {
         "sentry"
     ]
 
-    init() {
-        self.home = fm.homeDirectoryForCurrentUser
+    convenience init() {
+        self.init(home: FileManager.default.homeDirectoryForCurrentUser)
+    }
+
+    /// Designated init with an injectable home root — production passes the
+    /// real home; tests pass a temp directory so a round-trip never touches
+    /// the user's real Claude/Swivel data. All paths derive from `home`
+    /// exactly as the default does.
+    init(home: URL) {
+        self.home = home
         self.claudeDir = home.appendingPathComponent("Library/Application Support/Claude")
         self.rootDir = home.appendingPathComponent("Library/Application Support/Swivel")
 
@@ -126,6 +142,22 @@ final class ProfileManager {
         // crash-mid-snapshot. We do this at init rather than lazily so
         // disk usage doesn't accumulate silently.
         cleanOrphanedStagingDirs()
+    }
+
+    // Run `body` while holding the mutation gate, blocking until it's free.
+    // For background work (the switch flow) where a brief wait is fine.
+    private func locked<T>(_ body: () throws -> T) rethrows -> T {
+        mutationGate.wait()
+        defer { mutationGate.signal() }
+        return try body()
+    }
+
+    // Run `body` only if the mutation gate is free right now; otherwise throw
+    // `.busy`. For main-thread actions, so a switch in flight can't hang the UI.
+    private func tryLocked<T>(_ body: () throws -> T) throws -> T {
+        guard mutationGate.wait(timeout: .now()) == .success else { throw ProfileError.busy }
+        defer { mutationGate.signal() }
+        return try body()
     }
 
     // MARK: - Public API
@@ -173,15 +205,17 @@ final class ProfileManager {
         guard fm.fileExists(atPath: claudeDir.path) else { throw ProfileError.claudeDirMissing }
         let target = profilesDir.appendingPathComponent(name)
 
-        // Before overwriting the existing `Claude/` snapshot, rotate it into
-        // a timestamped backup so we can roll back if this save turned out
-        // to capture a bad state (e.g. the user was logged out).
-        rotateBackupIfPresent(in: target)
+        try tryLocked {
+            // Before overwriting the existing `Claude/` snapshot, rotate it into
+            // a timestamped backup so we can roll back if this save turned out
+            // to capture a bad state (e.g. the user was logged out).
+            try rotateBackupIfPresent(in: target)
 
-        try snapshotClaudeFolder(into: target)
-        try snapshotKeychainKey(into: target)
-        pruneBackups(in: target)
-        try setActiveProfile(name)
+            try snapshotClaudeFolder(into: target)
+            try snapshotKeychainKey(into: target)
+            pruneBackups(in: target)
+            try setActiveProfile(name)
+        }
     }
 
     func delete(profile name: String) throws {
@@ -201,10 +235,12 @@ final class ProfileManager {
         }
         guard fm.fileExists(atPath: claudeDir.path) else { throw ProfileError.claudeDirMissing }
         let target = profilesDir.appendingPathComponent(active)
-        rotateBackupIfPresent(in: target)
-        try snapshotClaudeFolder(into: target)
-        try snapshotKeychainKey(into: target)
-        pruneBackups(in: target)
+        try tryLocked {
+            try rotateBackupIfPresent(in: target)
+            try snapshotClaudeFolder(into: target)
+            try snapshotKeychainKey(into: target)
+            pruneBackups(in: target)
+        }
     }
 
     /// Rename an account. Moves the on-disk profile directory and updates
@@ -276,53 +312,49 @@ final class ProfileManager {
 
     /// Orchestrates the swap: save-current → quit Claude → restore target → relaunch.
     func switchTo(profile name: String, progress: @escaping (String) -> Void) throws {
-        let target = profilesDir.appendingPathComponent(name)
-        guard fm.fileExists(atPath: target.path) else { throw ProfileError.profileNotFound(name) }
+        try locked {
+            let target = profilesDir.appendingPathComponent(name)
+            guard fm.fileExists(atPath: target.path) else { throw ProfileError.profileNotFound(name) }
 
-        progress("Quitting Claude…")
-        ClaudeAppController.quit()
-        guard ClaudeAppController.waitUntilQuit(timeout: 10) else { throw ProfileError.claudeDidNotQuit }
+            progress("Quitting Claude…")
+            ClaudeAppController.quit()
+            guard ClaudeAppController.waitUntilQuit(timeout: 10) else { throw ProfileError.claudeDidNotQuit }
 
-        // Snapshot current state back into the active profile, so the current
-        // session doesn't get lost when we overwrite the Claude folder.
-        //
-        // NOTE: we deliberately do NOT re-snapshot the keychain key here.
-        // Electron's safeStorage key is generated once per install and does
-        // not rotate — the key captured at initial save-profile time stays
-        // valid. Re-reading on every switch would risk a keychain prompt if
-        // the item's ACL apps list is in a state that doesn't pre-authorize
-        // `/usr/bin/security`, which would defeat the whole point.
-        if let current = activeProfile(), current != name {
-            progress("Saving current session to \(current)…")
-            let currentProfile = profilesDir.appendingPathComponent(current)
-            try snapshotClaudeFolder(into: currentProfile)
+            // Verify the target's saved keychain key matches the current Claude
+            // install BEFORE touching the live folder. If they diverge (e.g. the
+            // user reinstalled Claude), the restored cookies wouldn't decrypt —
+            // surface that now, while the live session is still intact, rather
+            // than after we've wiped it.
+            //
+            // NOTE: we deliberately do NOT rewrite the keychain key on switch.
+            // Electron's safeStorage key is a device-local secret generated once
+            // per install and never rotated, so both profiles' saved keys already
+            // match the current value. More importantly, ANY `security` CLI write
+            // (`-U`, `-A`, or delete+add) strips the app's `teamid:` entry from
+            // the item's partition list (rebuilt from the caller's code signature
+            // on every write), so the next Claude launch would prompt.
+            try verifyKeychainKeyMatches(profile: target)
+
+            // Snapshot current state back into the active profile so the current
+            // session isn't lost. Rotate a backup first (mirroring saveCurrent),
+            // so the outgoing account keeps a rollback point even if its live
+            // state was bad. We do NOT re-snapshot the keychain key here — same
+            // partition-list reasoning as above.
+            if let current = activeProfile(), current != name {
+                progress("Saving current session to \(current)…")
+                let currentProfile = profilesDir.appendingPathComponent(current)
+                try rotateBackupIfPresent(in: currentProfile)
+                try snapshotClaudeFolder(into: currentProfile)
+                pruneBackups(in: currentProfile)
+            }
+
+            progress("Restoring \(name)…")
+            try restoreClaudeFolder(from: target)
+            try setActiveProfile(name)
+
+            progress("Launching Claude…")
+            ClaudeAppController.launch()
         }
-
-        progress("Restoring \(name)…")
-        try restoreClaudeFolder(from: target)
-        // NOTE: we deliberately do NOT rewrite the keychain key on switch.
-        //
-        // Electron's safeStorage key is a device-local secret generated once
-        // per install and never rotated. Both profiles' saved keys match the
-        // current keychain value (verified at snapshot time), so rewriting
-        // is redundant.
-        //
-        // More importantly, ANY `security` CLI write — `-U`, `-A`, or
-        // delete+add — strips the app's `teamid:` entry from the item's
-        // partition list, because the partition list is rebuilt from the
-        // caller's code signature on every write. The next time Claude
-        // launches, macOS prompts because its team ID is gone from the
-        // partition list.
-        //
-        // If an install's keychain key ever diverges from the saved key
-        // (e.g. user reinstalled Claude), a switch would fail to decrypt
-        // cookies — we'd want to detect and surface that here rather than
-        // silently corrupt state.
-        try verifyKeychainKeyMatches(profile: target)
-        try setActiveProfile(name)
-
-        progress("Launching Claude…")
-        ClaudeAppController.launch()
     }
 
     // MARK: - Snapshot / restore (atomic via staging + rename)
@@ -333,11 +365,11 @@ final class ProfileManager {
     /// the "stage complete" marker. Only after the stage is complete do we
     /// atomically promote the staged `Claude/` and plist into the profile.
     ///
-    /// A crash at any point before promotion leaves the old `Claude/`
-    /// untouched — the staging dir is orphaned and cleaned up on the next
-    /// ProfileManager init. A crash during promotion (between the two
-    /// renames) leaves a recoverable `Claude.replacing-<uuid>/` backup,
-    /// also cleaned up on init.
+    /// A crash before promotion leaves the old `Claude/` untouched — the
+    /// staging dir is orphaned and swept on the next ProfileManager init.
+    /// The promotion itself uses `FileManager.replaceItemAt`, which manages
+    /// its own temp + rollback, so a crash mid-promotion leaves either the
+    /// old or the new directory in place.
     private func snapshotClaudeFolder(into profileDir: URL) throws {
         try fm.createDirectory(at: profileDir, withIntermediateDirectories: true)
 
@@ -407,13 +439,12 @@ final class ProfileManager {
         let manifestURL = stagedClaude.appendingPathComponent(Self.manifestFileName)
         try manifestData.write(to: manifestURL, options: .atomic)
 
-        // ── Atomic promotion ───────────────────────────────────────────
-        // Each promotion is individually atomic on APFS via renamex_np
-        // with RENAME_SWAP (the primitive behind `replaceItemAt`). Between
-        // the Claude/ and plist promotions there's a brief window where
-        // the profile could reference a new Claude but an old plist; that
-        // mismatch is cosmetic (plist is preferences, not session data),
-        // so we don't guard it with a fancier protocol.
+        // ── Promotion ──────────────────────────────────────────────────
+        // Each promotion is individually atomic (see `atomicPromote`).
+        // Between the Claude/ and plist promotions there's a brief window
+        // where the profile could reference a new Claude but an old plist;
+        // that mismatch is cosmetic (plist is preferences, not session
+        // data), so we don't guard it with a fancier protocol.
         let liveClaude = profileDir.appendingPathComponent("Claude")
         try atomicPromote(staged: stagedClaude, to: liveClaude)
 
@@ -442,24 +473,58 @@ final class ProfileManager {
             plistAt: plistSnapshotExists ? plistSnapshot : nil
         )
 
-        // Wipe everything from Claude dir except excluded items.
-        if fm.fileExists(atPath: claudeDir.path) {
-            let entries = try fm.contentsOfDirectory(at: claudeDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
-            for entry in entries {
-                if excludedItems.contains(entry.lastPathComponent) { continue }
-                try fm.removeItem(at: entry)
+        // ── Phase 1: stage, WITHOUT touching the live install ───────────
+        // Copy the snapshot's entries into a staging dir first. The copy is
+        // the slow, failure-prone step (disk-full, I/O error, a bad entry);
+        // doing it before any destruction means a failure here leaves the
+        // live Claude session completely intact. (The previous wipe-then-copy
+        // could leave it half-destroyed if a copy failed mid-restore.)
+        // Staging lives under our rootDir — same volume as claudeDir, so the
+        // promotion below is a rename, not a copy — and is swept on init if a
+        // crash orphans it.
+        let staging = rootDir.appendingPathComponent(".restore-staging-\(UUID().uuidString)")
+        defer {
+            if fm.fileExists(atPath: staging.path) {
+                try? fm.removeItem(at: staging)
             }
-        } else {
-            try fm.createDirectory(at: claudeDir, withIntermediateDirectories: true)
         }
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
 
+        var stagedNames: Set<String> = []
         let snapEntries = try fm.contentsOfDirectory(at: snapshotDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
         for entry in snapEntries {
-            // Manifest file is our own bookkeeping — don't propagate it
-            // into Claude's live directory.
+            // Manifest file is our own bookkeeping — never propagate it into
+            // Claude's live directory.
             if entry.lastPathComponent == Self.manifestFileName { continue }
-            let dest = claudeDir.appendingPathComponent(entry.lastPathComponent)
-            try fm.copyItem(at: entry, to: dest)
+            let name = entry.lastPathComponent
+            do {
+                try fm.copyItem(at: entry, to: staging.appendingPathComponent(name))
+            } catch {
+                throw ProfileError.ioFailure("staging \(name): \(error.localizedDescription)")
+            }
+            stagedNames.insert(name)
+        }
+
+        // ── Phase 2: commit, via fast same-volume renames ───────────────
+        // All snapshot data is now on disk in `staging`, so promoting each
+        // entry into the live dir is a rename (individually atomic), not a
+        // copy. We never blank the live dir: each entry is swapped in place,
+        // then only stale NON-excluded entries (left over from the previously
+        // loaded account) are removed. Excluded items (Claude Code state,
+        // caches) are never touched.
+        if !fm.fileExists(atPath: claudeDir.path) {
+            try fm.createDirectory(at: claudeDir, withIntermediateDirectories: true)
+        }
+        for name in stagedNames {
+            try atomicPromote(staged: staging.appendingPathComponent(name),
+                              to: claudeDir.appendingPathComponent(name))
+        }
+        let liveEntries = try fm.contentsOfDirectory(at: claudeDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        for entry in liveEntries {
+            let name = entry.lastPathComponent
+            if excludedItems.contains(name) || name == Self.manifestFileName { continue }
+            if stagedNames.contains(name) { continue }
+            try fm.removeItem(at: entry)
         }
 
         if plistSnapshotExists {
@@ -483,12 +548,12 @@ final class ProfileManager {
         }
     }
 
-    /// Atomically promote `staged` into `final`. When `final` already
-    /// exists we use `replaceItemAt`, which on APFS is backed by
-    /// `renamex_np(.., RENAME_SWAP)` — a true atomic swap at the kernel
-    /// level. A crash during the call leaves either the old or new
-    /// state on disk, never a partial merge. When `final` doesn't yet
-    /// exist we fall back to `moveItem` (also a rename under the hood).
+    /// Promote `staged` into `final` as atomically as the platform allows.
+    /// When `final` exists we use `replaceItemAt`, which performs the swap
+    /// and manages its own backup/rollback temp; on APFS this is typically a
+    /// fast metadata operation. The guarantee we rely on is that a crash
+    /// leaves either the old or the new item in place — never a half-merged
+    /// one. When `final` doesn't exist yet we fall back to `moveItem`.
     private func atomicPromote(staged: URL, to final: URL) throws {
         if fm.fileExists(atPath: final.path) {
             // replaceItemAt swaps `final` and `staged` atomically, then
@@ -505,6 +570,19 @@ final class ProfileManager {
     /// them is safe. Called from init so disk usage doesn't silently
     /// accumulate over many crash-retry cycles.
     private func cleanOrphanedStagingDirs() {
+        // Restore-staging dirs (from an interrupted restore) live directly
+        // under rootDir.
+        if let rootChildren = try? fm.contentsOfDirectory(at: rootDir, includingPropertiesForKeys: nil) {
+            for child in rootChildren where child.lastPathComponent.hasPrefix(".restore-staging-") {
+                do {
+                    try fm.removeItem(at: child)
+                    Self.log.info("swept orphan restore-staging \(child.lastPathComponent, privacy: .public)")
+                } catch {
+                    Self.log.error("orphan sweep failed for \(child.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+        // Snapshot-staging dirs live inside each profile.
         guard let profiles = try? fm.contentsOfDirectory(at: profilesDir, includingPropertiesForKeys: nil) else { return }
         for profile in profiles {
             guard let children = try? fm.contentsOfDirectory(at: profile, includingPropertiesForKeys: nil) else { continue }
@@ -700,15 +778,17 @@ final class ProfileManager {
         guard fm.fileExists(atPath: backupDir.path) else {
             throw ProfileError.ioFailure("backup \(backup.directoryName) missing")
         }
-        // Preserve current state as a new backup before overwriting.
-        rotateBackupIfPresent(in: profileDir)
-        try fm.moveItem(at: backupDir, to: currentDir)
-        pruneBackups(in: profileDir)
+        try tryLocked {
+            // Preserve current state as a new backup before overwriting.
+            try rotateBackupIfPresent(in: profileDir)
+            try fm.moveItem(at: backupDir, to: currentDir)
+            pruneBackups(in: profileDir)
+        }
     }
 
     /// If `profileDir/Claude` exists, rename it to a timestamped backup
     /// directory. No-op if there's nothing to back up.
-    private func rotateBackupIfPresent(in profileDir: URL) {
+    private func rotateBackupIfPresent(in profileDir: URL) throws {
         let current = profileDir.appendingPathComponent("Claude")
         guard fm.fileExists(atPath: current.path) else { return }
         // Use file mdate if possible, else now. Mdate is more accurate to
@@ -728,11 +808,11 @@ final class ProfileManager {
         do {
             try fm.moveItem(at: current, to: candidate)
         } catch {
-            // Don't swallow — the caller's about to write a fresh Claude/
-            // over the top, and if the rotation failed we'd lose the
-            // pre-save state silently. Log loudly so the user can
-            // investigate.
+            // Propagate — the caller is about to write a fresh Claude/ over
+            // the top, so a silent rotation failure would destroy the only
+            // copy of the pre-save state. Abort the operation instead.
             Self.log.error("backup rotation failed for \(profileDir.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            throw ProfileError.ioFailure("could not preserve the previous snapshot as a backup: \(error.localizedDescription)")
         }
     }
 

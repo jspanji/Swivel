@@ -404,8 +404,8 @@ enum ProfileUsageReader {
             //   2. `messageLimits[<org>] = {"type": "within_limit", ...}`
             //      with no detail fields (newer clients, as of April 2026)
             // We treat both the same: return a snapshot with status
-            // `.ok` and nil detail fields. The MenuBuilder renders
-            // this as the small green "all fine" dot.
+            // `.ok` and nil detail fields. The UI renders this as the
+            // small green "all fine" checkmark.
             func healthySnapshot(overage: Bool = false) -> UsageSnapshot {
                 UsageSnapshot(
                     status: .ok,

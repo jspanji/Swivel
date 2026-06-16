@@ -33,17 +33,82 @@ The core state machine is small:
 
 ## Module layout
 
+**Package layout.** The code is a `SwivelCore` library target plus a thin
+`Swivel` executable (just `main.swift` → `launchSwivel()`). All logic and UI
+live in `SwivelCore` so the `SwivelCoreTests` target can reach it via
+`@testable import`. `build-app.sh` builds the `Swivel` executable product
+exactly as before.
+
 | Module | What it owns |
 |--------|--------------|
-| `AppDelegate` | `NSStatusItem`, hotkey registration, menu rebuild, all `@objc` action handlers, the menu bar icon rendering |
+| `AppDelegate` | `NSStatusItem`, hotkey registration, action handlers, `UIActions` wiring |
+| `StatusIconRenderer` | Pure Core Graphics menu-bar icon drawing (testable, no state) |
+| `ClaudeActivityMonitor` | Frontmost-Claude polling + "likely in use" heuristic |
+| `Dialogs` | Modal alerts + banner notifications (UI-feedback primitives) |
+| `UsageService` | Per-account usage: parallel live fetch, one keychain read, single-flight coalescing |
 | `SwitchCoordinator` | The `isSwitching` flag + background-queue dispatch for switches |
 | `ProfileManager` | Everything on disk: snapshots, manifests, backups, `state.json`, the keychain read |
-| `MenuBuilder` | NSMenu composition, color palette, swatch rendering |
+| `SwivelViewModel` | `ObservableObject` source of truth for both SwiftUI surfaces; rebuilds its published snapshot wherever the old menu was rebuilt |
+| `StatusItemController` | The translucent `NSPopover` (SwiftUI content), left/right-click routing, minimal right-click fallback `NSMenu` |
+| `DesktopWidgetController` | The floating glass desktop widget: borderless non-activating `NSPanel`, window level, refresh timer, persistence |
+| `PopoverRootView` / `WidgetRootView` / `AccountRowView` | SwiftUI view layer; `AccountRowView` is shared so both surfaces render accounts identically |
+| `UsageFormatting` | Display logic for usage snapshots (tier labels, reset deltas, staleness, gauge rules) shared by popover + widget |
+| `ProfileUsageReader` | Local-only usage: parses Claude Desktop's LocalStorage cache for `messageLimits` (present only under rate-limit pressure) |
+| `LiveUsageClient` | **Opt-in only.** Decrypts an account's session cookie and fetches always-on 5h/7d utilization from claude.ai. The sole authenticated network path |
+| `Theme` | Color palette (`MenuStyle`), swatch rendering, status colors, hex↔Color bridges |
 | `ClaudeAppController` | `NSRunningApplication` quit/launch + wait helpers |
 | `ClaudeStatusChecker` | Polling the public status page, adaptive cadence |
 | `KeychainHelper` | One-shot read of the `Claude Safe Storage` keychain item |
 | `HotkeyManager` | Carbon Hot Key API wrapper |
 | `LoginItemManager` | `SMAppService` wrapper |
+
+## UI layer
+
+The status item's old `NSMenu` was replaced by a translucent `NSPopover`
+hosting SwiftUI (`.ultraThinMaterial`), plus an optional floating glass
+desktop widget — both fed by one `SwivelViewModel`:
+
+```
+                       AppDelegate
+   hotkeys ──▶ performSwitch ──▶ SwitchCoordinator
+   handlers (NSAlert dialogs — unchanged from the menu era)
+        │                                ▲
+        │ viewModel.refresh()            │ UIActions closures
+        ▼                                │ (switch / rename / delete / …)
+   SwivelViewModel (ObservableObject)    │
+        │                                │
+   ┌────┴─────────┐                      │
+   ▼              ▼                      │
+ StatusItemController   DesktopWidgetController
+   NSPopover              NSPanel (borderless, non-activating)
+   PopoverRootView        WidgetRootView
+        └──── AccountRowView (shared) ────┘
+```
+
+Design points:
+
+- **State flows down, intents flow up.** The view model republishes
+  `ProfileManager` / `ProfileUsageReader` / `ClaudeStatusChecker` state;
+  SwiftUI never mutates anything directly — every intent goes through a
+  `UIActions` closure into the same AppDelegate handlers the menu used.
+- **The popover closes before any modal.** Handlers run `NSApp.activate`
+  + `runModal`, which would steal key status from a transient popover
+  and dismiss it mid-interaction; closing first makes it deterministic.
+- **`menuWillOpen` became `popoverWillShow`** (the `onWillShow` callback):
+  status re-check + view-model refresh on every open, throttled inside
+  `ClaudeStatusChecker`.
+- **Right-click keeps a minimal fallback `NSMenu`** (About / Check for
+  Updates… / Quit) — discoverability plus a guaranteed Quit path
+  independent of SwiftUI.
+- **Hotkeys are untouched.** ⌘⌥1–9 / ⌘⌥` are Carbon global hotkeys
+  (`HotkeyManager`) and never depended on the menu.
+- **The widget is *not* WidgetKit.** Swivel is ad-hoc signed; a WidgetKit
+  appex wouldn't be trusted by the widget host. The `NSPanel` sits just
+  above the desktop icons (visible on show-desktop, under app windows)
+  with an "Always on Top" toggle to flip it to `.floating`; visibility,
+  level, and frame persist across launches. A 60 s timer keeps the
+  reset countdowns honest while it's visible (the usage reader's mtime
+  cache makes idle ticks nearly free).
 
 ## On-disk layout
 
@@ -216,23 +281,126 @@ the current keychain value and throws if they differ — which is how
 reinstall-driven key rotation surfaces instead of silently corrupting
 cookies.
 
-## Release process
+## Auto-update (Sparkle)
 
-1. Update `CHANGELOG.md`:
-   - Move `[Unreleased]` items into a new `[X.Y.Z]` section.
-   - Add the date.
-   - Add a new empty `[Unreleased]` above it.
-2. Tag the commit: `git tag -s vX.Y.Z -m "Swivel X.Y.Z"`.
-3. Push: `git push origin main --tags`.
-4. The `release.yml` GitHub Actions workflow builds the app, zips it,
-   and attaches the artifact to a draft GitHub Release named `vX.Y.Z`.
-5. Review the release notes, publish.
+Swivel ≥ 1.1.0 ships with [Sparkle 2](https://sparkle-project.org)
+wired up. The app polls
+`https://raw.githubusercontent.com/jspanji/Swivel/main/appcast.xml`
+on a 24-hour cadence (Sparkle's default) and offers any newer
+release with a verified EdDSA signature. Users can also force a
+check via **Check for Updates…** in the menu.
 
-For signed/notarized builds (Developer ID), you'll need to add the
-`codesign --sign "Developer ID Application: …"` step and an Apple
-notarization step. The current CI uses ad-hoc signing, which is
-sufficient for "download and run on my own Mac" but triggers a
-Gatekeeper warning on first launch.
+### One-time setup (maintainer only)
+
+1. Download Sparkle's release tools so you have `generate_keys` and
+   `sign_update` on your `PATH`. Easiest path:
+   ```bash
+   curl -L https://github.com/sparkle-project/Sparkle/releases/download/2.6.4/Sparkle-2.6.4.tar.xz \
+     | tar -xJ -C /tmp
+   sudo cp /tmp/bin/{generate_keys,sign_update} /usr/local/bin/
+   ```
+2. Generate the key pair. The private key lands in your login
+   keychain; the tool prints the matching public key:
+   ```bash
+   generate_keys
+   ```
+3. Save the printed public key (one line of base64) to
+   `sparkle.pubkey` at the repo root and commit it. The public key
+   is meant to be public; only the private key is sensitive.
+   ```bash
+   echo "PUBLIC_KEY_HERE" > sparkle.pubkey
+   git add sparkle.pubkey
+   ```
+4. Rebuild — `build-app.sh` will read the file and embed
+   `SUPublicEDKey` into the bundle's `Info.plist`.
+
+### Release process
+
+1. Update `CHANGELOG.md`: move `[Unreleased]` items into a new
+   `[X.Y.Z]` section, dated. Add a fresh empty `[Unreleased]`.
+2. Build + sign:
+   ```bash
+   MARKETING_VERSION=X.Y.Z ./build-app.sh --release
+   sign_update build/Swivel-X.Y.Z.zip
+   ```
+   `sign_update` prints a ready-to-paste `<enclosure …>` line.
+3. Add a new `<item>` to the top of `appcast.xml` using that
+   enclosure plus the version, pubDate, and a summary pulled from
+   the CHANGELOG. Existing items stay below for older clients.
+4. Commit: `appcast.xml`, `CHANGELOG.md`.
+5. Tag and push:
+   ```bash
+   git tag -s vX.Y.Z -m "Swivel X.Y.Z"
+   git push origin main --tags
+   ```
+6. The `release.yml` GitHub Action builds + zips + drafts a GitHub
+   Release with the artifact attached. Review and **Publish** —
+   that flips the asset to publicly downloadable, which the
+   appcast's `enclosure url` is already pointing at.
+
+The order matters: `appcast.xml` is committed *before* the release
+asset exists at the URL. That's safe — Sparkle won't try to
+download until users actually run a check, and by the time they do,
+the published GitHub Release is live.
+
+### Anatomy of an appcast item
+
+```xml
+<item>
+    <title>Version 1.1.0</title>
+    <pubDate>Wed, 23 Apr 2026 14:00:00 +0000</pubDate>
+    <sparkle:version>2</sparkle:version>                      <!-- CFBundleVersion -->
+    <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+    <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+    <description><![CDATA[
+        - Auto-update via Sparkle.
+        - Smart-switch nudge when active account approaches limit.
+    ]]></description>
+    <enclosure url="https://github.com/jspanji/Swivel/releases/download/v1.1.0/Swivel-1.1.0.zip"
+               length="248192"
+               type="application/octet-stream"
+               sparkle:edSignature="…base64 sig from sign_update…" />
+</item>
+```
+
+### Notarization (optional, future)
+
+For signed/notarized builds (Developer ID), add a
+`codesign --sign "Developer ID Application: …"` step in
+`build-app.sh` plus an Apple notarization step in `release.yml`.
+The current pipeline uses ad-hoc signing — fine for personal
+distribution, triggers a one-time Gatekeeper warning on first
+launch. Sparkle works either way, but on a notarized build it can
+also use Developer ID code-signature verification as a defence
+in depth alongside its EdDSA check.
+
+## Live Usage (opt-in network path)
+
+By default Swivel's only network call is the public status page. The
+`LiveUsageClient` adds a second, **opt-in** path (`liveUsageEnabled`,
+off by default, gated behind a confirmation dialog):
+
+- For each account it decrypts the `sessionKey` + `lastActiveOrg`
+  cookies from that profile's Chromium cookie store (Chromium v10
+  scheme: PBKDF2-SHA1 of the device-local "Claude Safe Storage" key,
+  AES-128-CBC, strip the 32-byte SHA256-domain prefix). This reuses the
+  same Safe Storage key Swivel already reads to swap cookies on a
+  switch — see `KeychainHelper`.
+- It then `GET`s `https://claude.ai/api/organizations/<org>/usage` with
+  that cookie and parses the `five_hour` / `seven_day` windows
+  (`utilization` + `resets_at`) plus `extra_usage` (overage). This is the
+  same data the claude.ai web app shows on its usage page. The plan tier
+  comes from a second `GET .../organizations/<org>` (`rate_limit_tier`),
+  cached for an hour since it changes rarely.
+- Read-only, the user's own session, the user's own account. The
+  decrypted cookie never leaves the process except as the `Cookie`
+  header on that one request. Results are cached ~2 min per profile.
+- Any failure (no cookie, expired session → 401, key mismatch after a
+  Claude reinstall, offline) returns nil and the row falls back to the
+  local `ProfileUsageReader` snapshot.
+
+When the toggle is off, none of this runs and no cookie is ever read or
+decrypted for usage purposes.
 
 ## Threat model
 
@@ -240,3 +408,9 @@ Covered in [SECURITY.md](../SECURITY.md). In brief, Swivel defends
 against data loss from partial writes, silent corruption, and
 concurrent switches. It does not defend against local adversaries with
 access to your user account — that's the OS's job.
+
+The opt-in Live Usage path (above) transmits each enabled account's
+session cookie to claude.ai over HTTPS, and only to claude.ai. It is
+off by default and requires explicit per-session-style consent; when
+on, the trust boundary widens to include Anthropic's servers (which the
+account already trusts by virtue of being a Claude session).

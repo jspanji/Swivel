@@ -25,37 +25,10 @@ enum KeychainHelper {
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static func writeSafeStorageKey(_ key: String) throws {
-        // Strategy: plain `-U` update in place — no `-A`, no `-T`.
-        //
-        // This updates only the stored value, preserving the existing ACL
-        // apps list AND the partition list. Why that matters:
-        //
-        //   - `-A` resets the partition list to `apple-tool:` only, stripping
-        //     `teamid:Q6L2SF6YDW`. The next Claude launch then prompts
-        //     "Claude wants to access..." because its team ID is no longer
-        //     trusted for this item.
-        //
-        //   - delete+add does the same thing — a fresh item has a fresh
-        //     partition list without Claude's team ID.
-        //
-        //   - `-U` combined with `-T` or `-A` triggers "change access
-        //     permissions" prompts every call, because modifying ACL needs
-        //     auth even when you already have access.
-        //
-        // Plain `-U` sidesteps all of this. The item keeps whatever ACL it
-        // already has (Claude's team ID in partition list; `/usr/bin/security`
-        // in apps list after the user's one-time "Always Allow" on first
-        // read), and the value is silently updated.
-        let (status, _, err) = run("/usr/bin/security", args: [
-            "add-generic-password",
-            "-s", service,
-            "-a", account,
-            "-w", key,
-            "-U"
-        ])
-        if status != 0 { throw KeychainError.runFailed(status, err) }
-    }
+    // NOTE: this helper is intentionally read-only. Swivel never writes to the
+    // keychain (see SECURITY.md): a `security` write would rebuild the item's
+    // partition list from our code signature, stripping Claude's team ID and
+    // triggering a permission prompt on Claude's next launch.
 
     private static func run(_ launchPath: String, args: [String]) -> (Int32, String, String) {
         let proc = Process()
