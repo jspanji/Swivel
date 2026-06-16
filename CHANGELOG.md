@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-06-16
+
 ### Added
 
 - Auto-update via Sparkle 2. Swivel polls `appcast.xml` on a 24-hour
@@ -34,10 +36,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The menu-bar dropdown is now a translucent **popover** (glass
   material) instead of a plain menu. Same features, one surface:
   per-account usage bars with plan / messages-left / reset-time detail,
-  switch on click, hover "…" menu for Rename / Change Color / Restore
-  Backup / Delete, and a footer with service status and settings.
-  Right-click the menu bar icon for a compact About / Updates / Quit
-  menu. Global hotkeys are unchanged.
+  an explicit per-row switch button, hover "…" menu for Rename / Change
+  Color / Restore Backup / Delete, and a footer with service status and
+  settings. Right-click the menu bar icon for a compact About / Updates /
+  Quit menu. Global hotkeys are unchanged.
+- Switching is now deliberate: clicking a row's usage area no longer
+  switches — use the row's **⇄** button (or a hotkey). A switch quits and
+  relaunches Claude, so requiring an explicit press avoids accidental
+  switches. Each row also shows its keyboard shortcut beside the name.
 - Usage color is now **calm by default**: a list of low-usage accounts
   reads neutral instead of a wall of color. Amber appears at ≥ 75% and
   red at ≥ 90% utilization, and a gauge fills only once an account is
@@ -93,5 +99,6 @@ First public release.
 - Shell-safe `Process` invocation when reading the keychain — args are
   passed as an array, never concatenated into a shell string.
 
-[Unreleased]: https://github.com/jspanji/Swivel/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/jspanji/Swivel/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/jspanji/Swivel/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jspanji/Swivel/releases/tag/v1.0.0

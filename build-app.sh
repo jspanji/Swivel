@@ -7,7 +7,7 @@
 #   ./build-app.sh --release          Build + zip + emit SHA-256 for GitHub releases
 #
 # Environment overrides:
-#   MARKETING_VERSION=1.0.1           Override CFBundleShortVersionString (default: 1.0.0)
+#   MARKETING_VERSION=1.0.1           Override CFBundleShortVersionString (default: 1.1.0)
 #   BUILD_NUMBER=42                   Override CFBundleVersion (default: git rev count, or 1)
 
 set -euo pipefail
@@ -21,7 +21,7 @@ APP_DIR="$BUILD_DIR/${APP_NAME}.app"
 # Version metadata. Marketing version is a human-readable semver string
 # surfaced in the About dialog. Build number should monotonically increase
 # per build — git rev-count is a sensible default when available.
-MARKETING_VERSION="${MARKETING_VERSION:-1.0.0}"
+MARKETING_VERSION="${MARKETING_VERSION:-1.1.0}"
 if [[ -z "${BUILD_NUMBER:-}" ]]; then
     if git rev-parse --git-dir >/dev/null 2>&1; then
         BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
