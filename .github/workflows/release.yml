@@ -75,8 +75,18 @@ jobs:
             echo "::error::SPARKLE_ED_PRIVATE_KEY secret is not set — cannot sign the update."
             exit 1
           fi
-          SIGN="$(find .build -type f -name sign_update -path '*Sparkle*' | head -1)"
-          if [ -z "$SIGN" ]; then echo "::error::sign_update not found under .build"; exit 1; fi
+          # The EdDSA signing binary. Pin the canonical SPM artifact path: a
+          # loose find also matches the legacy old_dsa_scripts/sign_update (and
+          # the Sparkle source checkout), and picking the wrong one fails on
+          # --ed-key-file. Fall back to a precise find (artifacts only, direct
+          # bin/ child) if the layout ever moves.
+          SIGN=".build/artifacts/sparkle/Sparkle/bin/sign_update"
+          if [ ! -x "$SIGN" ]; then
+            SIGN="$(find .build/artifacts -type f -name sign_update -path '*/bin/sign_update' | head -1)"
+          fi
+          if [ -z "$SIGN" ] || [ ! -x "$SIGN" ]; then
+            echo "::error::EdDSA sign_update binary not found under .build/artifacts"; exit 1
+          fi
           KEYFILE="$(mktemp)"
           trap 'rm -f "$KEYFILE"' EXIT
           printf '%s' "$SPARKLE_PRIVATE_KEY" > "$KEYFILE"
