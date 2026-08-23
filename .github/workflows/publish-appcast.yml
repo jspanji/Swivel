@@ -1,0 +1,138 @@
+name: Publish appcast
+
+# Runs when a GitHub Release is PUBLISHED — never on tag push.
+#
+# The feed must not advertise a download before that download exists. When the
+# appcast was committed by the tag-triggered release workflow, the release was
+# still a draft, so its asset URL 404'd: Sparkle offered users an update it
+# then couldn't fetch. Gating on `release: published` makes the artifact live
+# before it is ever advertised.
+#
+# The EdDSA signature is recomputed here from the published asset rather than
+# handed over from the build job. Ed25519 is deterministic, so signing the same
+# bytes yields the same signature — and signing what users will actually
+# download is a stronger guarantee than trusting a value from an earlier run.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish to the appcast (e.g. v1.1.2)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  appcast:
+    name: Sign released asset + update appcast
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Select Xcode
+        # Match ci.yml rather than hard-pinning a version the runner image may
+        # drop; any recent Xcode can resolve the Sparkle artifact bundle.
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          sudo xcode-select -s "${XCODE:-/Applications/Xcode.app}"
+
+      - name: Resolve tag + version
+        id: v
+        run: |
+          RAW="${{ github.event.inputs.tag || github.event.release.tag_name }}"
+          echo "tag=$RAW" >> "$GITHUB_OUTPUT"
+          echo "version=${RAW#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the published asset
+        id: asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.v.outputs.tag }}"
+          VER="${{ steps.v.outputs.version }}"
+          URL="https://github.com/${{ github.repository }}/releases/download/$TAG/Swivel-$VER.zip"
+          # Fail loudly if the asset isn't actually reachable — that is exactly
+          # the condition this workflow exists to prevent.
+          CODE="$(curl -sIL -o /dev/null -w '%{http_code}' "$URL")"
+          if [ "$CODE" != "200" ]; then
+            echo "::error::$URL is not downloadable (HTTP $CODE). Is the release published?"
+            exit 1
+          fi
+          curl -sL -o "Swivel-$VER.zip" "$URL"
+          echo "zip=Swivel-$VER.zip" >> "$GITHUB_OUTPUT"
+          echo "build_number=$(unzip -p "Swivel-$VER.zip" 'Swivel.app/Contents/Info.plist' \
+            | plutil -extract CFBundleVersion raw -o - -)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve Sparkle tooling
+        run: swift build -c release --target SwivelCore >/dev/null 2>&1 || swift package resolve
+
+      - name: Sign the released asset (EdDSA)
+        id: sign
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          if [ -z "${SPARKLE_PRIVATE_KEY:-}" ]; then
+            echo "::error::SPARKLE_ED_PRIVATE_KEY secret is not set."; exit 1
+          fi
+          SIGN=".build/artifacts/sparkle/Sparkle/bin/sign_update"
+          if [ ! -x "$SIGN" ]; then
+            SIGN="$(find .build/artifacts -type f -name sign_update -path '*/bin/sign_update' | head -1)"
+          fi
+          if [ -z "$SIGN" ] || [ ! -x "$SIGN" ]; then
+            echo "::error::sign_update not found under .build/artifacts"; exit 1
+          fi
+          KEYFILE="$(mktemp)"; trap 'rm -f "$KEYFILE"' EXIT
+          printf '%s' "$SPARKLE_PRIVATE_KEY" | tr -d '[:space:]' > "$KEYFILE"
+          SIGOUT="$("$SIGN" "${{ steps.asset.outputs.zip }}" --ed-key-file "$KEYFILE" 2>&1)" || {
+            echo "::error::sign_update failed: $SIGOUT"; exit 1; }
+          echo "ed_sig=$(printf '%s' "$SIGOUT" | sed -n 's/.*edSignature="\([^"]*\)".*/\1/p')" >> "$GITHUB_OUTPUT"
+          echo "length=$(printf '%s' "$SIGOUT" | sed -n 's/.*length="\([0-9]*\)".*/\1/p')" >> "$GITHUB_OUTPUT"
+
+      - name: Append signed item to appcast.xml
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          VER="${{ steps.v.outputs.version }}"
+          awk -v ver="$VER" '
+            /^## \[/ { if (capture) exit; if ($0 ~ "\\[" ver "\\]") { capture=1; next } }
+            capture { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/appcast-notes.md"
+
+          ITEM="$(python3 scripts/append_appcast_item.py \
+            --appcast appcast.xml \
+            --version "$VER" \
+            --tag '${{ steps.v.outputs.tag }}' \
+            --build '${{ steps.asset.outputs.build_number }}' \
+            --length '${{ steps.sign.outputs.length }}' \
+            --sig '${{ steps.sign.outputs.ed_sig }}' \
+            --notes-file "$RUNNER_TEMP/appcast-notes.md" \
+            --repo '${{ github.repository }}')"
+          {
+            echo "### Sparkle appcast item — $VER"
+            echo '```xml'
+            echo "$ITEM"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if git diff --quiet -- appcast.xml; then
+            echo "appcast already lists $VER — nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add appcast.xml
+          git commit -m "Publish $VER to the Sparkle appcast [skip ci]"
+          if git push origin "HEAD:${DEFAULT_BRANCH}"; then
+            echo "Committed the appcast update to ${DEFAULT_BRANCH}."
+          else
+            echo "::warning::Couldn't push to ${DEFAULT_BRANCH} (branch protection?). Add the item from the summary above via a PR."
+          fi
