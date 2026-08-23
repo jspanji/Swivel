@@ -91,12 +91,26 @@ final class LiveUsageClient {
     }
 
     /// `extra_usage` ships inside the usage payload — no extra request.
-    /// Treat "enabled" (or any nonzero utilization) as active.
+    /// True only when overage is actively being drawn *right now*.
+    ///
+    /// Two fields have already proven misleading here:
+    ///   - `is_enabled` means overage is merely *available* on the plan, not
+    ///     in use. Keying on it lit the chip for every enabled account.
+    ///   - `used_credits` appears to be cumulative, so any historical overage
+    ///     would pin the chip on permanently.
+    /// Current utilization of the extra-usage bucket is the only field that
+    /// tracks "kicking in", so it's the sole signal.
     private func overageActive(_ any: Any?) -> Bool {
         guard let d = any as? [String: Any] else { return false }
-        if let enabled = d["is_enabled"] as? Bool { return enabled }
-        if let u = d["utilization"] as? Double { return u > 0 }
-        return false
+        guard let u = numeric(d["utilization"]) else { return false }
+        return u > 0
+    }
+
+    /// Coerce a JSON number (Double or Int; `NSNull`/missing → nil).
+    private func numeric(_ any: Any?) -> Double? {
+        if let d = any as? Double { return d }
+        if let i = any as? Int { return Double(i) }
+        return nil
     }
 
     /// Plan tier from the org endpoint, cached for an hour per org.
