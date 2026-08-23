@@ -6,6 +6,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-08-23
+
+### Added
+
+- Releases are now **signed with an Apple Developer ID and notarized**, so
+  downloads and auto-updates open without the "unidentified developer"
+  Gatekeeper warning.
+- Downloads now ship as a **`.dmg` installer** with a proper window layout
+  and a drag-to-Applications target, alongside the existing `.zip` (which is
+  what auto-update uses).
+- The app has an **icon**. It previously had none at all, so Finder showed the
+  generic placeholder in the installer, in Applications, and everywhere else
+  the bundle appeared.
+- Sparkle's update dialog now shows **release notes** instead of an empty pane.
+
+### Fixed
+
+- The **Usage Overlay refreshes on its own again**. macOS App Nap was
+  suspending its timer, so it only updated when you clicked the menu bar icon.
+- The **`overage` tag no longer appears for accounts that aren't using
+  overage**. It keyed on overage being *available* on the plan rather than
+  actually being drawn.
+
 ## [1.1.0] — 2026-06-16
 
 ### Added
@@ -99,6 +122,7 @@ First public release.
 - Shell-safe `Process` invocation when reading the keychain — args are
   passed as an array, never concatenated into a shell string.
 
-[Unreleased]: https://github.com/jspanji/Swivel/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/jspanji/Swivel/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/jspanji/Swivel/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jspanji/Swivel/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jspanji/Swivel/releases/tag/v1.0.0
