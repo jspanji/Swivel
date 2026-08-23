@@ -242,36 +242,15 @@ jobs:
             ${{ steps.artifact.outputs.zip }}
             ${{ steps.artifact.outputs.dmg }}
 
-      - name: Publish signed item to appcast.xml
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      - name: Next step
         run: |
-          ITEM="$(python3 scripts/append_appcast_item.py \
-            --appcast appcast.xml \
-            --version '${{ steps.version.outputs.version }}' \
-            --tag '${{ steps.version.outputs.tag }}' \
-            --build '${{ steps.artifact.outputs.build_number }}' \
-            --length '${{ steps.sign.outputs.length }}' \
-            --sig '${{ steps.sign.outputs.ed_sig }}' \
-            --notes-file "$RUNNER_TEMP/appcast-notes.md" \
-            --repo '${{ github.repository }}')"
           {
-            echo "### Sparkle appcast item — ${{ steps.version.outputs.version }}"
-            echo "If the auto-commit below was skipped/blocked, add this under the marker in appcast.xml:"
-            echo '```xml'
-            echo "$ITEM"
-            echo '```'
+            echo "### Draft release created — publish it to finish"
+            echo ""
+            echo "The Sparkle appcast is **not** updated yet, by design: the feed"
+            echo "must never advertise a download before the release is published,"
+            echo "or Sparkle offers an update whose URL 404s."
+            echo ""
+            echo "Publishing the draft triggers \`publish-appcast.yml\`, which"
+            echo "signs the released zip and commits the feed entry."
           } >> "$GITHUB_STEP_SUMMARY"
-          if git diff --quiet -- appcast.xml; then
-            echo "appcast already lists this version — nothing to commit."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add appcast.xml
-          git commit -m "Publish ${{ steps.version.outputs.version }} to the Sparkle appcast [skip ci]"
-          if git push origin "HEAD:${DEFAULT_BRANCH}"; then
-            echo "Committed the appcast update to ${DEFAULT_BRANCH}."
-          else
-            echo "::warning::Couldn't push appcast to ${DEFAULT_BRANCH} (branch protection?). Add the item from the run summary above via a PR."
-          fi
