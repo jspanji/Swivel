@@ -37,7 +37,18 @@
             <sparkle:shortVersionString>1.1.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <description><![CDATA[
-<p>See CHANGELOG.md for details.</p>
+<h3>Added</h3>
+<ul>
+<li>Releases are now <strong>signed with an Apple Developer ID and notarized</strong>, so downloads and auto-updates open without the &quot;unidentified developer&quot; Gatekeeper warning.</li>
+<li>Downloads now ship as a <strong><code>.dmg</code> installer</strong> with a proper window layout and a drag-to-Applications target, alongside the existing <code>.zip</code> (which is what auto-update uses).</li>
+<li>The app has an <strong>icon</strong>. It previously had none at all, so Finder showed the generic placeholder in the installer, in Applications, and everywhere else the bundle appeared.</li>
+<li>Sparkle&#x27;s update dialog now shows <strong>release notes</strong> instead of an empty pane.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li>The <strong>Usage Overlay refreshes on its own again</strong>. macOS App Nap was suspending its timer, so it only updated when you clicked the menu bar icon.</li>
+<li>The <strong><code>overage</code> tag no longer appears for accounts that aren&#x27;t using overage</strong>. It keyed on overage being <em>available</em> on the plan rather than actually being drawn.</li>
+</ul>
             ]]></description>
             <enclosure url="https://github.com/jspanji/Swivel/releases/download/v1.1.1/Swivel-1.1.1.zip" length="1728344" type="application/octet-stream" sparkle:edSignature="ZFT0uMJM3O/7r6fm2fJ/O5gUTC+20xI42t5I0snz9y3Z9yNvtTTvuRSJmWRZY2vytC/qbjzW4j+mm5Nur4G8Bw==" />
         </item>

@@ -50,6 +50,8 @@ def md_to_html(md: str) -> str:
     def inline(text: str) -> str:
         text = _html.escape(text)
         text = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+        # Italics after bold, so the ** case is already consumed.
+        text = _re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", text)
         text = _re.sub(r"`([^`]+?)`", r"<code>\1</code>", text)
         return text
 
