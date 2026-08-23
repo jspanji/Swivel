@@ -363,16 +363,49 @@ the published GitHub Release is live.
 </item>
 ```
 
-### Notarization (optional, future)
+### Code signing & notarization
 
-For signed/notarized builds (Developer ID), add a
-`codesign --sign "Developer ID Application: …"` step in
-`build-app.sh` plus an Apple notarization step in `release.yml`.
-The current pipeline uses ad-hoc signing — fine for personal
-distribution, triggers a one-time Gatekeeper warning on first
-launch. Sparkle works either way, but on a notarized build it can
-also use Developer ID code-signature verification as a defence
-in depth alongside its EdDSA check.
+`build-app.sh` signs in one of two modes:
+
+- **Developer ID** — used automatically when a
+  `Developer ID Application` identity is in the keychain (or
+  `SIGN_IDENTITY` is set). Adds `--options runtime` (hardened
+  runtime) and `--timestamp`, both of which notarization requires.
+- **Ad-hoc** — the fallback for dev/fork builds with no certificate.
+  Runs locally; Gatekeeper warns on other Macs.
+
+**Nested code is signed inside-out, never with `--deep`.** Apple
+deprecates `--deep`, and it mis-signs Sparkle's nested bundles, which
+notarization then rejects. The order is:
+
+```
+XPCServices/*.xpc → Updater.app → Autoupdate → Sparkle.framework → Swivel.app
+```
+
+**Notarization** runs via `--notarize` (or automatically inside
+`--release` when `NOTARY_PROFILE` is set). One-time credential setup:
+
+```
+xcrun notarytool store-credentials "swivel-notary" \
+    --apple-id <email> --team-id <TEAMID> --password <app-specific-password>
+```
+
+**Ordering is load-bearing:**
+
+```
+build → codesign → notarize → staple → zip → sign_update → appcast
+```
+
+Stapling rewrites the `.app`, so a zip produced before stapling would
+ship an unstapled bundle *and* its Sparkle EdDSA signature and byte
+length wouldn't match the artifact users download. `--release`
+enforces this order.
+
+Note that Sparkle's **EdDSA signing is separate** from Apple code
+signing — a Developer ID does not replace `sign_update`; releases need
+both. Verify a finished build with
+`spctl -a -vvv -t install build/Swivel.app`, which should report
+`source=Notarized Developer ID`.
 
 ## Live Usage (opt-in network path)
 

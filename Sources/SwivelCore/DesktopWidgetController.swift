@@ -20,6 +20,11 @@ final class DesktopWidgetController {
     private var panel: NSPanel?
     private var refreshTimer: Timer?
     private var wakeObserver: NSObjectProtocol?
+    /// Held while the overlay is visible. An LSUIElement app with no visible
+    /// windows is a prime App Nap target, and a napped app has its timers
+    /// throttled or suspended — which presents exactly as "the overlay only
+    /// updates when I click the menu bar icon".
+    private var activityToken: NSObjectProtocol?
     private var sizeSubscription: AnyCancellable?
     private let makeRootView: (DesktopWidgetController) -> WidgetRootView
 
@@ -45,6 +50,11 @@ final class DesktopWidgetController {
     deinit {
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+        }
+        // Symmetry with `hide()`: an activity held at dealloc would otherwise
+        // keep App Nap suppressed for the rest of the process's life.
+        if let activityToken {
+            ProcessInfo.processInfo.endActivity(activityToken)
         }
     }
 
@@ -82,6 +92,13 @@ final class DesktopWidgetController {
         model.widgetVisible = true
         UserDefaults.standard.set(true, forKey: Self.visibleKey)
 
+        if activityToken == nil {
+            activityToken = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiatedAllowingIdleSystemSleep],
+                reason: "Usage overlay live refresh"
+            )
+        }
+
         onRefreshNeeded?()
         startRefreshTimer()
     }
@@ -91,6 +108,10 @@ final class DesktopWidgetController {
         model.widgetVisible = false
         UserDefaults.standard.set(false, forKey: Self.visibleKey)
         stopRefreshTimer()
+        if let token = activityToken {
+            ProcessInfo.processInfo.endActivity(token)
+            activityToken = nil
+        }
     }
 
     func toggleAlwaysOnTop() {
@@ -218,10 +239,13 @@ final class DesktopWidgetController {
     /// the reset-countdown and freshness tags staying honest.
     private func startRefreshTimer() {
         stopRefreshTimer()
-        let timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             self?.onRefreshNeeded?()
         }
         timer.tolerance = 10
+        // .common (not the default mode) so the tick still fires while a menu
+        // is tracking or the panel is being dragged.
+        RunLoop.main.add(timer, forMode: .common)
         refreshTimer = timer
     }
 

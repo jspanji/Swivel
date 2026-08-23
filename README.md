@@ -22,9 +22,9 @@ Juggling two Claude accounts — personal + work, or a couple of client logins �
 
 ### Download the release
 
-Grab `Swivel-<version>.zip` from the [latest release](https://github.com/jspanji/Swivel/releases/latest). Unzip, drag `Swivel.app` to `/Applications`, and launch it.
+Grab `Swivel-<version>.dmg` from the [latest release](https://github.com/jspanji/Swivel/releases/latest), open it, and drag `Swivel.app` onto the `Applications` alias. (A `.zip` is also attached if you prefer it — that's what auto-update uses.)
 
-> First launch: macOS will warn that the app is from an unidentified developer (ad-hoc signed). Right-click the app and choose **Open** → **Open**. You only need to do this once.
+> Releases are signed with an Apple Developer ID and notarized by Apple, so they open normally — no Gatekeeper warning, no right-click dance.
 
 ### Build from source
 
@@ -72,7 +72,11 @@ Each account gets a colored menu bar icon so you can see which one is active at 
 
 ## The Usage Overlay
 
-**Gear menu ▸ Show Usage Overlay** puts a small glass panel on your desktop with every account's usage bar — same rows as the popover, always visible. By default it floats on top of your windows so you can watch your limits during a session; right-click it and toggle **Always on Top** off to tuck it behind windows (visible only on show-desktop) instead. Drag it by its title line; use a row's switch button (⇄) to switch. Position and visibility stick across launches.
+**Gear menu ▸ Show Usage Overlay** puts a small glass panel on your desktop with every account's usage bar — same rows as the popover, always visible. It floats on top of your windows by default so you can watch your limits during a session.
+
+Its title bar has two controls: the **pin** toggles always-on-top (unpinned, it drops behind your windows and is only visible on show-desktop), and **✕** hides the overlay. Both are also on the right-click menu. Drag the panel by its title line, and use a row's switch button (**⇄**) to switch accounts. Position, pin state, and visibility all stick across launches.
+
+The overlay refreshes itself about once a minute while it's open, so reset countdowns stay honest without you touching anything.
 
 <p align="center"><img src="docs/screenshots/usage-overlay.png" width="560" alt="Swivel's Usage Overlay floating on the desktop: a glass panel with each account's 5-hour and 7-day usage"></p>
 
@@ -92,6 +96,14 @@ This is the **one feature that sends anything off your Mac**, so it's **off unti
 - Results are cached briefly so opening the popover doesn't spam the API.
 - If an account's saved session has expired, that account silently falls back to the local cache.
 - Turn it back off any time from the same menu.
+
+## Updates
+
+Swivel updates itself via [Sparkle](https://sparkle-project.org). It checks about once a day and, when there's a new version, shows a dialog with the release notes and **Install / Remind Me Later / Skip This Version** — nothing installs without you agreeing to it. To check on demand, use **Gear menu ▸ Check for Updates…**.
+
+Every update is verified against an EdDSA signature before it's applied, and releases are Developer ID signed and notarized.
+
+> On **v1.0.0**? That build predates the updater, so it can't see new versions. Download the [latest release](https://github.com/jspanji/Swivel/releases/latest) once manually and auto-update takes over from there.
 
 ## Backups
 
@@ -146,9 +158,9 @@ macOS may ask for Accessibility or Input Monitoring permission on first launch.
 <details>
 <summary><strong>Gatekeeper says "Swivel.app can't be opened"</strong></summary>
 
-The release binary is ad-hoc signed, not notarized.
+Current releases are Developer ID signed and notarized, so this shouldn't happen. If you see it, you're most likely on an older ad-hoc build (v1.1.0 or earlier), or running a build you compiled yourself without a signing certificate.
 
-**Fix:** right-click the app in Finder and choose **Open** → **Open**. You'll only need to do this once per install.
+**Fix:** download the latest release, or right-click the app in Finder and choose **Open** → **Open** (needed once per install).
 </details>
 
 ## How it works
@@ -182,7 +194,8 @@ Full internals in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 - Don't edit Claude Desktop while a switch is in progress. The menu bar icon dims while work is in flight — wait for it to brighten.
 - Keychain key rotation (rare — happens when Claude Desktop is fully reinstalled) invalidates saved cookies. Affected accounts must be re-saved.
-- Release builds are ad-hoc signed, not notarized. First launch requires a right-click → Open.
+- Live Usage is experimental: it reads undocumented `claude.ai` endpoints, so it can break without warning. It's off by default and the local-cache bars work regardless.
+- Builds you compile yourself are ad-hoc signed unless you have a Developer ID certificate installed — that's fine locally, but macOS will warn if you move one to another Mac.
 - This is an unofficial tool. It's not affiliated with Anthropic.
 
 ## Uninstall
@@ -192,7 +205,11 @@ Quit Swivel, then:
 ```bash
 rm -rf /Applications/Swivel.app
 rm -rf ~/Library/Application\ Support/Swivel
+rm -f  ~/Library/Preferences/com.joes.swivel.plist
+rm -rf ~/Library/Caches/com.joes.swivel
 ```
+
+The last two are Swivel's own settings and Sparkle's update cache — harmless to leave, but this clears them out completely.
 
 Your Claude Desktop sessions stay where they are — uninstalling Swivel doesn't touch them.
 

@@ -41,6 +41,84 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app
 
+      # Developer ID signing + notarization. All five secrets must be present;
+      # if any is missing we skip this step entirely and build-app.sh falls
+      # back to ad-hoc signing, so forks and secret-less runs still work.
+      #
+      # One-time setup (see docs/ARCHITECTURE.md → "Release process"):
+      #   Keychain Access → export "Developer ID Application: …" as a .p12
+      #   base64 -i cert.p12 | pbcopy      → secret BUILD_CERTIFICATE_BASE64
+      #   the .p12 export password         → secret P12_PASSWORD
+      #   any random string                → secret KEYCHAIN_PASSWORD
+      #   Apple ID email / team id / app-specific password
+      #                                    → APPLE_ID / APPLE_TEAM_ID / APPLE_APP_PASSWORD
+      - name: Import Developer ID certificate
+        id: signing
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -z "${BUILD_CERTIFICATE_BASE64:-}" ] || [ -z "${APPLE_ID:-}" ]; then
+            echo "::warning::Signing secrets absent — this release will be AD-HOC signed, not notarized."
+            echo "notarized=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+
+          # Dedicated ephemeral keychain — never touch the runner's default.
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$P12_PASSWORD" -A \
+            -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          # Without this, codesign blocks on an interactive keychain prompt.
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          # Keep the runner's existing keychains in the search list rather than
+          # replacing it. Replacing can hide Apple's intermediate CAs, and
+          # without the "Developer ID Certification Authority" chain the
+          # identity evaluates as CSSMERR_TP_NOT_TRUSTED — `find-identity -v`
+          # then reports 0 valid identities and build-app.sh would silently
+          # fall back to AD-HOC signing. (This exact failure happened during
+          # local setup.)
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+
+          # Belt-and-braces: install the Developer ID G2 intermediate itself.
+          if curl -fsSL --retry 3 \
+               https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer \
+               -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"; then
+            security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
+              -k "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+          fi
+          rm -f "$CERT_PATH"
+
+          # Fail loudly instead of shipping an unnotarized build by accident:
+          # if the signing secrets were supplied, a VALID identity must exist.
+          if ! security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
+            echo "::error::Certificate imported but no VALID Developer ID identity is visible."
+            echo "Identities present (may be untrusted / missing chain):"
+            security find-identity -p codesigning || true
+            exit 1
+          fi
+          security find-identity -v -p codesigning
+
+          # Notary credentials into the same ephemeral keychain.
+          xcrun notarytool store-credentials "swivel-notary" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --keychain "$KEYCHAIN_PATH"
+
+          echo "notarized=true" >> "$GITHUB_OUTPUT"
+          echo "keychain=$KEYCHAIN_PATH" >> "$GITHUB_OUTPUT"
+
       - name: Derive version
         id: version
         run: |
@@ -55,6 +133,11 @@ jobs:
       - name: Build release artifact
         env:
           MARKETING_VERSION: ${{ steps.version.outputs.version }}
+          # Empty when secrets are absent → build-app.sh skips notarization.
+          NOTARY_PROFILE: ${{ steps.signing.outputs.notarized == 'true' && 'swivel-notary' || '' }}
+          # The profile lives in the ephemeral keychain, not the default one,
+          # so notarytool needs to be told where to look.
+          NOTARY_KEYCHAIN: ${{ steps.signing.outputs.keychain }}
         run: ./build-app.sh --release
 
       - name: Locate artifact + build number
@@ -64,6 +147,11 @@ jobs:
           if [ ! -f "$ZIP" ]; then echo "::error::$ZIP not found"; exit 1; fi
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
           echo "sha256=$(shasum -a 256 "$ZIP" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          DMG="build/Swivel-${{ steps.version.outputs.version }}.dmg"
+          if [ -f "$DMG" ]; then
+            echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+            echo "dmg_sha256=$(shasum -a 256 "$DMG" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          fi
           echo "build_number=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' build/Swivel.app/Contents/Info.plist)" >> "$GITHUB_OUTPUT"
 
       - name: Sign update (Sparkle EdDSA)
@@ -120,6 +208,8 @@ jobs:
             capture { print }
           ' CHANGELOG.md)"
           [ -z "$NOTES" ] && NOTES="See CHANGELOG.md for details."
+          # Clean copy for the Sparkle <description> — no SHA/signing footer.
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/appcast-notes.md"
           {
             echo "notes<<NOTES_EOF"
             echo "$NOTES"
@@ -127,8 +217,16 @@ jobs:
             echo "---"
             echo ""
             echo "**SHA-256 (Swivel-$VERSION.zip):** \`${{ steps.artifact.outputs.sha256 }}\`"
+            if [ -n "${{ steps.artifact.outputs.dmg_sha256 }}" ]; then
+              echo ""
+              echo "**SHA-256 (Swivel-$VERSION.dmg):** \`${{ steps.artifact.outputs.dmg_sha256 }}\`"
+            fi
             echo ""
-            echo "> ⚠️ Ad-hoc signed. On first launch, right-click the app and choose **Open** to bypass Gatekeeper. See docs/ARCHITECTURE.md for the notarization path."
+            if [ "${{ steps.signing.outputs.notarized }}" = "true" ]; then
+              echo "> ✅ Signed with a Developer ID and notarized by Apple — no Gatekeeper warning."
+            else
+              echo "> ⚠️ Ad-hoc signed. On first launch, right-click the app and choose **Open** to bypass Gatekeeper."
+            fi
             echo "NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -140,7 +238,9 @@ jobs:
           body: ${{ steps.notes.outputs.notes }}
           draft: true
           prerelease: false
-          files: ${{ steps.artifact.outputs.zip }}
+          files: |
+            ${{ steps.artifact.outputs.zip }}
+            ${{ steps.artifact.outputs.dmg }}
 
       - name: Publish signed item to appcast.xml
         env:
@@ -153,6 +253,7 @@ jobs:
             --build '${{ steps.artifact.outputs.build_number }}' \
             --length '${{ steps.sign.outputs.length }}' \
             --sig '${{ steps.sign.outputs.ed_sig }}' \
+            --notes-file "$RUNNER_TEMP/appcast-notes.md" \
             --repo '${{ github.repository }}')"
           {
             echo "### Sparkle appcast item — ${{ steps.version.outputs.version }}"

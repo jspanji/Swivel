@@ -38,9 +38,21 @@ struct LiveUsageParsingTests {
         #expect(client.parseUsage(sample, tier: nil).overageActive == false)
     }
 
-    @Test func overageOnWhenEnabled() {
-        let json: [String: Any] = ["extra_usage": ["is_enabled": true]]
-        #expect(client.parseUsage(json, tier: nil).overageActive == true)
+    @Test func overageEnabledButUnusedIsNotActive() {
+        // is_enabled means "available", not "in use" — must NOT show the chip.
+        let json: [String: Any] = ["extra_usage": ["is_enabled": true, "utilization": NSNull()]]
+        #expect(client.parseUsage(json, tier: nil).overageActive == false)
+    }
+
+    @Test func overageActiveOnlyWhenCurrentlyDrawn() {
+        // Current utilization of the extra-usage bucket is the only signal.
+        #expect(client.parseUsage(["extra_usage": ["utilization": 5]], tier: nil).overageActive == true)
+        #expect(client.parseUsage(["extra_usage": ["utilization": 0]], tier: nil).overageActive == false)
+        // used_credits is cumulative — historical spend must NOT light the chip.
+        #expect(client.parseUsage(
+            ["extra_usage": ["is_enabled": true, "used_credits": 200, "utilization": NSNull()]],
+            tier: nil
+        ).overageActive == false)
     }
 
     @Test func utilizationClampedToOne() {

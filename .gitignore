@@ -42,3 +42,6 @@ IDEWorkspaceChecks.plist
 
 # Local Claude Code state accidentally dropped into repo
 .claude/settings.local.json
+
+# Internal handoff/planning doc — not for the public repo.
+MIGRATION.md
